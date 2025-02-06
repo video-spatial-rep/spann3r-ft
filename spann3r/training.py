@@ -24,11 +24,13 @@ from dust3r.losses import L21
 from spann3r.datasets import *
 from spann3r.loss import Regr3D_t, ConfLoss_t, Regr3D_t_ScaleShiftInv
 from croco.utils.misc import NativeScalerWithGradNormCount as NativeScaler
+torch.serialization.add_safe_globals([argparse.Namespace])
+
 def get_args_parser():
     parser = argparse.ArgumentParser('Spann3R training', add_help=False)
     
     # Model
-    parser.add_argument('--model', default="Spann3R(dus3r_name='/home/rilyn/project-files/02-pj-cambrians/cambrians-prep/LLaVA-NeXT/spann3r/spann3r.pth', use_feat=False, mem_pos_enc=False)",
+    parser.add_argument('--model', default="Spann3R(dus3r_name='/home/rilyn/project-files/02-pj-cambrians/cambrians-prep/LLaVA-NeXT/spann3r/new_spann3r_f.pth', use_feat=False, mem_pos_enc=False)",
                         type=str, help="string containing the model to build")
     parser.add_argument('--pretrained', default=None, help='path of a starting checkpoint')
 
@@ -39,20 +41,51 @@ def get_args_parser():
     
     # Train only on ArkitScene
     parser.add_argument('--train_dataset', 
-                        default="ArkitScene(split='train', ROOT='/data_new/rilyn/raw/Training', resolution=224, transform=ColorJitter, max_thresh=100)", 
+                        default="200 @ ArkitScene(split='train', ROOT='/data_new/rilyn', resolution=224, transform=ColorJitter, max_thresh=100)", 
                         type=str, help="training set")
 
     # Remove evaluation (omit --test_dataset)
 
     # Training parameters
-    parser.add_argument('--batch_size', default=2, type=int, help="Batch size per GPU")
-    parser.add_argument('--epochs', default=120, type=int, help="Maximum number of epochs")
-    parser.add_argument('--lr', type=float, default=5e-5, help='learning rate')
-    parser.add_argument('--min_lr', type=float, default=1e-06, help='Lower LR bound')
+    # Training
+    parser.add_argument('--batch_size', default=2, type=int,
+                        help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
+    parser.add_argument('--batch_size_test', default=1, type=int,
+                        help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
+    parser.add_argument('--accum_iter', default=1, type=int,
+                        help="Accumulate gradient iterations (for increasing the effective batch size under memory constraints)")
+    parser.add_argument('--epochs', default=120, type=int, help="Maximum number of epochs for the scheduler")
+    
+    parser.add_argument('--weight_decay', type=float, default=0.05, help="weight decay (default: 0.05)")
+    parser.add_argument('--lr', type=float, default=5e-5, metavar='LR', help='learning rate (absolute lr)')
+    parser.add_argument('--blr', type=float, default=1.5e-4, metavar='LR',
+                        help='base learning rate: absolute_lr = base_lr * total_batch_size / 256')
+    parser.add_argument('--min_lr', type=float, default=1e-06, metavar='LR',
+                        help='lower lr bound for cyclic schedulers that hit 0')
+    parser.add_argument('--warmup_epochs', type=int, default=10, metavar='N', help='epochs to warmup LR')
+
+    parser.add_argument('--amp', type=int, default=0,
+                        choices=[0, 1], help="Use Automatic Mixed Precision for pretraining")
 
     # Others
     parser.add_argument('--num_workers', default=2, type=int)
     parser.add_argument('--world_size', default=1, type=int, help='Number of distributed processes')
+    
+    #     parser.add_argument('--num_workers', default=2, type=int)
+#     parser.add_argument('--num_workers_test', default=0, type=int)
+#     parser.add_argument('--world_size', default=1, type=int, help='number of distributed processes')
+    parser.add_argument('--local_rank', default=-1, type=int)
+    parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
+
+#     parser.add_argument('--eval_freq', type=int, default=1, help='Test loss evaluation frequency')
+    parser.add_argument('--save_freq', default=1, type=int,
+                        help='frequence (number of epochs) to save checkpoint in checkpoint-last.pth')
+    parser.add_argument('--keep_freq', default=5, type=int,
+                        help='frequence (number of epochs) to save checkpoint in checkpoint-%d.pth')
+    parser.add_argument('--print_freq', default=20, type=int,
+                        help='frequence (number of iterations) to print infos while training')
+    
+    parser.add_argument('--alpha_c2f', type=int, default=1, help='use alpha c2f')
 
     # Output
     parser.add_argument('--output_dir', default='./output/arkitscene_only', type=str, help="Path to save the output")
@@ -83,25 +116,7 @@ def get_args_parser():
 #      # Exp
 #     parser.add_argument('--seed', default=0, type=int, help="Random seed")
     
-#     # Training
-#     parser.add_argument('--batch_size', default=2, type=int,
-#                         help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
-#     parser.add_argument('--batch_size_test', default=1, type=int,
-#                         help="Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus")
-#     parser.add_argument('--accum_iter', default=1, type=int,
-#                         help="Accumulate gradient iterations (for increasing the effective batch size under memory constraints)")
-#     parser.add_argument('--epochs', default=120, type=int, help="Maximum number of epochs for the scheduler")
-    
-#     parser.add_argument('--weight_decay', type=float, default=0.05, help="weight decay (default: 0.05)")
-#     parser.add_argument('--lr', type=float, default=5e-5, metavar='LR', help='learning rate (absolute lr)')
-#     parser.add_argument('--blr', type=float, default=1.5e-4, metavar='LR',
-#                         help='base learning rate: absolute_lr = base_lr * total_batch_size / 256')
-#     parser.add_argument('--min_lr', type=float, default=1e-06, metavar='LR',
-#                         help='lower lr bound for cyclic schedulers that hit 0')
-#     parser.add_argument('--warmup_epochs', type=int, default=10, metavar='N', help='epochs to warmup LR')
 
-#     parser.add_argument('--amp', type=int, default=0,
-#                         choices=[0, 1], help="Use Automatic Mixed Precision for pretraining")
     
 #     # others
 #     parser.add_argument('--num_workers', default=2, type=int)
@@ -208,42 +223,83 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
+    accum_iter = args.accum_iter
+
+    if log_writer is not None:
+        print('log_dir: {}'.format(log_writer.log_dir))
+
+    if hasattr(data_loader, 'dataset') and hasattr(data_loader.dataset, 'set_epoch'):
+        data_loader.dataset.set_epoch(epoch)
+    if hasattr(data_loader, 'sampler') and hasattr(data_loader.sampler, 'set_epoch'):
+        data_loader.sampler.set_epoch(epoch)
+        epoch_ratio = epoch/args.epochs
+        
+    if epoch_ratio < 0.75:
+        active_ratio = min(1, epoch/args.epochs*2.0)
+    else:
+        active_ratio = max(0.5, 1 - (epoch_ratio - 0.75) / 0.25)
+    data_loader.dataset.set_ratio(active_ratio)
+    #print(f"active thresh: {data_loader.datasets.dataset.active_thresh}")
+    
     
     optimizer.zero_grad()
-    
+
     for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
+        epoch_f = epoch + data_iter_step / len(data_loader)
+
+        # we use a per iteration (instead of per epoch) lr scheduler
+        if data_iter_step % accum_iter == 0:
+            misc.adjust_learning_rate(optimizer, epoch_f, args)
+        
         for view in batch:
-            for name in 'img pts3d valid_mask camera_pose camera_intrinsics F_matrix corres'.split():
+            for name in 'img pts3d valid_mask camera_pose camera_intrinsics F_matrix corres'.split():  # pseudo_focal
                 if name not in view:
                     continue
                 view[name] = view[name].to(device, non_blocking=True)
-
+        
+        
         preds, preds_all = model.forward(batch)
         loss, loss_details, loss_factor = criterion.compute_frame_loss(batch, preds_all)
-        loss += loss_factor
+        loss += loss_factor     
+
         loss_value = float(loss)
 
         if not math.isfinite(loss_value):
-            print(f"Loss is {loss_value}, stopping training")
+            print("Loss is {}, stopping training".format(loss_value), force=True)
             sys.exit(1)
 
-        loss /= args.accum_iter
-        loss_scaler(loss, optimizer, parameters=model.parameters(),
-                    update_grad=(data_iter_step + 1) % args.accum_iter == 0, clip_grad=1.0)
-
-        if (data_iter_step + 1) % args.accum_iter == 0:
+        loss /= accum_iter
+        norm = loss_scaler(loss, optimizer, parameters=model.parameters(),
+                    update_grad=(data_iter_step + 1) % accum_iter == 0, clip_grad=1.0) # 
+        
+        if (data_iter_step + 1) % accum_iter == 0:
             optimizer.zero_grad()
+        del loss
+        del batch
 
         lr = optimizer.param_groups[0]["lr"]
+        metric_logger.update(epoch=epoch_f)
+        metric_logger.update(lr=lr)
         metric_logger.update(loss=loss_value, **loss_details)
 
-        # Log training metrics to wandb
-        wandb.log({
-            "train_loss": loss_value,
-            "learning_rate": lr,
-            "epoch": epoch
-        })
+        if (data_iter_step + 1) % accum_iter == 0 and ((data_iter_step + 1) % (accum_iter * args.print_freq)) == 0:
+            loss_value_reduce = misc.all_reduce_mean(loss_value)  # MUST BE EXECUTED BY ALL NODES
+            if log_writer is None:
+                continue
+            """ We use epoch_1000x as the x-axis in tensorboard.
+            This calibrates different curves when batch size changes.
+            """
+            epoch_1000x = int(epoch_f * 1000)
+            log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
+            log_writer.add_scalar('train_lr', lr, epoch_1000x)
+            log_writer.add_scalar('train_iter', epoch_1000x, epoch_1000x)
+            log_writer.add_scalar('active_ratio', active_ratio, epoch_1000x)
+            for name, val in loss_details.items():
+                log_writer.add_scalar('train_'+name, val, epoch_1000x)
 
+    # gather the stats from all processes
+    metric_logger.synchronize_between_processes()
+    print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 # def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
