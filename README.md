@@ -5,8 +5,8 @@
     
 | Date | News/TODOs |
 |--|--|
-| 20250206v2 | Llava-video encoder processing script & ckpt|
-| 20250206v1 | update training script for vsi |
+| 20250206 | Llava-video encoder processing script & ckpt|
+| 20250205 | update training script for vsi |
 
  ## shortcuts
 
