@@ -15,3 +15,4 @@
 
 ## Training [M3]
 `CUDA_VISIBLE_DEVICES=0 python train.py --batch_size 8`
+`python eval.py --exp_path /home/rilyn/project-files/02-pj-cambrians/spann3r/output/arkitscene_only_spann3r_1e-5/ --ckpt checkpoint-last.pth --device cuda:0`

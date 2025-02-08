@@ -14,10 +14,11 @@ from spann3r.loss import Regr3D_t_ScaleShiftInv
 from spann3r.datasets import *
 from torch.utils.data import DataLoader
 from spann3r.tools.eval_recon import accuracy, completion
+torch.serialization.add_safe_globals([argparse.Namespace])
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Spann3R evaluation', add_help=False)
-    parser.add_argument('--exp_path', type=str, help='Path to experiment folder', default='./checkpoints')
+    parser.add_argument('--exp_path', type=str, help='Path to experiment folder', default='/home/rilyn/project-files/test/spann3r-ft/eval_ckpy')
     parser.add_argument('--exp_name', type=str, default='ckpt_best', help='Path to experiment folder')
     parser.add_argument('--ckpt', type=str, default='spann3r.pth', help='ckpt name')
     parser.add_argument('--scenegraph_type', type=str, default='complete', help='scenegraph type')
@@ -38,14 +39,14 @@ def main(args):
     os.makedirs(exp_path, exist_ok=True)
 
     datasets_all = {
-        '7scenes': SevenScenes(split='test', ROOT="./data/7scenes",
-                                resolution=224, num_seq=1, full_video=True, kf_every=20),
-        'NRGBD': NRGBD(split='test', ROOT="./data/neural_rgbd", 
+        # '7scenes': SevenScenes(split='test', ROOT="./data/7scenes",
+        #                         resolution=224, num_seq=1, full_video=True, kf_every=20),
+        'NRGBD': NRGBD(split='test', ROOT="/data_new/rilyn/neural_rgbd", 
                            resolution=224, num_seq=1, full_video=True, kf_every=40),
-        'DTU': DTU(split='test', ROOT="./data/dtu_test",
-                   resolution=224, num_seq=1, full_video=True, kf_every=5),
+        # 'DTU': DTU(split='test', ROOT="./data/dtu_test",
+        #            resolution=224, num_seq=1, full_video=True, kf_every=5),
     }
-    model = Spann3R(dus3r_name='./checkpoints/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth', 
+    model = Spann3R(dus3r_name='/home/rilyn/project-files/02-pj-cambrians/cambrians-prep/LLaVA-NeXT/spann3r/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth', 
                 use_feat=False).to(args.device)
     
     model.load_state_dict(torch.load(ckpt_path, map_location=args.device)['model'])
@@ -54,14 +55,24 @@ def main(args):
 
     criterion = Regr3D_t_ScaleShiftInv(L21, norm_mode=False, gt_scale=True)
 
+
     with torch.no_grad():
         for name_data, dataset in datasets_all.items():
+            print(f"Dataset {name_data} has {len(dataset)} samples")
+            if len(dataset) == 0:
+                print(f"⚠️ Warning: Dataset {name_data} is empty. Skipping...")
+                continue
+
             save_path = osp.join(exp_path, name_data)
             if args.offline:
                 save_path = osp.join(save_path + '_offline')
             os.makedirs(save_path, exist_ok=True)
+            print(f"Results for {name_data} will be saved in: {save_path}")
+
 
             log_file = osp.join(save_path, 'logs.txt')
+            print(f"Logging results to: {log_file}")
+
             os.makedirs(save_path, exist_ok=True)
 
             acc_all = 0
@@ -77,8 +88,14 @@ def main(args):
             time_all = []
 
             dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
+            print(f"Starting evaluation loop for {name_data} with {len(dataloader)} batches")
+
+            if len(dataloader) == 0:
+                print(f"⚠️ Warning: No batches in dataloader for {name_data}. Skipping...")
+                continue
 
             for i, batch in enumerate(dataloader):
+                print(f"Processing batch {i+1}/{len(dataloader)} for {name_data}")
 
                 for view in batch:
                     for name in 'img pts3d valid_mask camera_pose camera_intrinsics F_matrix corres'.split():  # pseudo_focal
@@ -117,11 +134,11 @@ def main(args):
 
                 fps = len(batch) / (end - start)                
 
-                print(f'Finished reconstruction for {name_data} {i+1}/{len(dataloader)}, FPS: {fps:.2f}')
 
                 fps_all.append(fps)
                 time_all.append(end - start)
                 
+                print(f'Finished reconstruction for {name_data} {i+1}/{len(dataloader)}, FPS: {fps:.2f}')
 
                 # Evaluation
                 print(f'Evaluation for {name_data} {i+1}/{len(dataloader)}')
@@ -233,17 +250,32 @@ def main(args):
 
                 # release cuda memory
                 torch.cuda.empty_cache()
+            if len(dataloader) > 0:
+                avg_acc = acc_all / len(dataloader)
+                avg_comp = comp_all / len(dataloader)
+                avg_nc1 = nc1_all / len(dataloader)
+                avg_nc2 = nc2_all / len(dataloader)
+                avg_fps = sum(fps_all) / len(fps_all)
+                avg_time = sum(time_all) / len(time_all)
+            else:
+                print(f"⚠️ Warning: No batches processed for {name_data}. Skipping evaluation results.")
+                avg_acc = avg_comp = avg_nc1 = avg_nc2 = avg_fps = avg_time = 0
 
                 print(f"Finished evaluation for {name_data} {i+1}/{len(dataloader)}")
 
+            print(f"Final Results for {name_data} -> Acc: {avg_acc}, Comp: {avg_comp}, NC1: {avg_nc1}, NC2: {avg_nc2}")
+            
+            with open(log_file, "a") as log:
+                log.write(f"Dataset: {name_data}, Accuracy: {avg_acc}, Completion: {avg_comp}, NC1: {avg_nc1}, NC2: {avg_nc2}\n")
+                log.write(f"Average FPS: {avg_fps}, Average Time: {avg_time}\n")
 
 
                 # Get depth from pcd and run TSDFusion
                 
             
             print(f"Dataset: {name_data}, Accuracy: {acc_all/len(dataloader)}, Completion: {comp_all/len(dataloader)}, NC1: {nc1_all/len(dataloader)}, NC2: {nc2_all/len(dataloader)} - Acc_med: {acc_all_med/len(dataloader)}, Comp_med: {comp_all_med/len(dataloader)}, NC1_med: {nc1_all_med/len(dataloader)}, NC2_med: {nc2_all_med/len(dataloader)}", file=open(log_file, "a"))
-            print(f"Average fps: {sum(fps) / len(fps)}, Average time: {sum(time_all) / len(time_all)}", file=open(log_file, "a"))
-                
+            print(f"Average fps: {sum(fps_all) / len(fps_all)}, Average time: {sum(time_all) / len(time_all)}", file=open(log_file, "a"))
+
 
 
 if __name__ == '__main__':
