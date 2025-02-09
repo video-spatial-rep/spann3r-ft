@@ -365,6 +365,9 @@ class Spann3R(nn.Module):
             dec1, dec2 = self.decode(feat_fuse, pos1, feat2, pos2)
             res1 = self.downstream_head(dec1, shape1, 1)
             res2 = self.downstream_head(dec2, shape2, 2)
+            res2 = self.downstream_head(dec2, shape2, 2)
+
+
 
             conf1 = res1['conf']
             conf2 = res2['conf']
@@ -471,72 +474,84 @@ class Spann3R(nn.Module):
         return preds, preds_all, idx_used
     
     def forward(self, frames, return_memory=False):
+        # Initialize the spatial memory module depending on training mode.
         if self.training:
-            sp_mem = SpatialMemory(self.norm_q, self.norm_k, self.norm_v, mem_dropout=self.mem_dropout, attn_thresh=0)
+            sp_mem = SpatialMemory(self.norm_q, self.norm_k, self.norm_v,
+                                    mem_dropout=self.mem_dropout, attn_thresh=0)
         else:
             sp_mem = SpatialMemory(self.norm_q, self.norm_k, self.norm_v)
         
-        feat1, feat2, pos1, pos2, shape1, shape2 = None, None, None, None, None, None
+        # Initialize feature variables.
+        feat1, feat2 = None, None
+        pos1, pos2 = None, None
+        shape1, shape2 = None, None
         feat_k1, feat_k2 = None, None
 
         preds = None
         preds_all = []
+        # f_H will be taken from the last iteration.
+        f_H = None
 
+        # Loop through the frame pairs.
         for i in range(len(frames)):
-            if i == len(frames)-1:
+            if i == len(frames) - 1:
                 break
+
             view1 = frames[i]
-            view2 = frames[(i+1)]
+            view2 = frames[i+1]
 
             ##### Encode frames
-            # feat1: [bs, p=196, c=1024]   
-            feat1, feat2, pos1, pos2, shape1, shape2 = self.encode_frames(view1, view2, feat1, feat2, pos1, pos2, shape1, shape2)
+            # This returns: feat1, feat2, pos1, pos2, shape1, shape2.
+            feat1, feat2, pos1, pos2, shape1, shape2 = self.encode_frames(
+                view1, view2, feat1, feat2, pos1, pos2, shape1, shape2
+            )
 
             ##### Memory readout
             if feat_k2 is not None:
                 feat_fuse = sp_mem.memory_read(feat_k2, res=True)
-                # feat_fuse = feat_fuse + feat1
             else:
                 feat_fuse = feat1
-            
+
             ##### Decode features
-            # dec1[-1]: [bs, p, c=768]
+            # dec1 and dec2 are the outputs of the two decoders.
             dec1, dec2 = self.decode(feat_fuse, pos1, feat2, pos2)
-            
-            ##### Encode feat key
+
+            # Here we assume f_H is the final token of the reference decoder's output.
+            # (According to your notation, dec1 corresponds to f_H' and f_H.)
+            f_H = dec1[-1]
+
+            ##### Encode feature keys for memory update
             feat_k1 = self.encode_feat_key(feat1, dec1[-1], 1)
             feat_k2 = self.encode_feat_key(feat2, dec2[-1], 2)
 
-            ##### Regress pointmaps
+            ##### Regress pointmaps via the downstream heads
             with torch.cuda.amp.autocast(enabled=False):
                 res1 = self.downstream_head(dec1, shape1, 1)
                 res2 = self.downstream_head(dec2, shape2, 2)
-            
+
             ##### Memory update
             cur_v = self.encode_cur_value(res1, dec1, pos1, shape1)
-
             if self.training:
-                sp_mem.add_mem(feat_k1, cur_v+feat_k1)
+                sp_mem.add_mem(feat_k1, cur_v + feat_k1)
             else:
-                sp_mem.add_mem_check(feat_k1, cur_v+feat_k1)
+                sp_mem.add_mem_check(feat_k1, cur_v + feat_k1)
             
-            res2['pts3d_in_other_view'] = res2.pop('pts3d')  
-             
+            # Prepare the outputs: note that we re-label a key in res2.
+            res2['pts3d_in_other_view'] = res2.pop('pts3d')
+            
             if preds is None:
                 preds = [res1]
                 preds_all = [(res1, res2)]
             else:
+                # Also adjust res1 similarly.
                 res1['pts3d_in_other_view'] = res1.pop('pts3d')
                 preds.append(res1)
                 preds_all.append((res1, res2))
-                
-                
-        preds.append(res2)
-
-        if return_memory:
-            return preds, preds_all, sp_mem
         
-        return preds, preds_all
-
-
-    
+        # Append the final result.
+        preds.append(res2)
+        
+        # Return the predictions and the extracted f_H.
+        if return_memory:
+            return preds, preds_all, sp_mem, f_H
+        return preds, preds_all, f_H
